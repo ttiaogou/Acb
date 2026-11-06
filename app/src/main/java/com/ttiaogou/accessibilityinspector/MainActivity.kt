@@ -1,4 +1,3 @@
-
 package com.ttiaogou.accessibilityinspector
 
 import android.accessibilityservice.AccessibilityServiceInfo
@@ -24,6 +23,7 @@ import android.widget.Toast
 import com.ttiaogou.accessibilityinspector.accessibility.InspectorAccessibilityService
 import com.ttiaogou.accessibilityinspector.data.InspectorStore
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -35,7 +35,7 @@ class MainActivity : Activity() {
     private lateinit var nodeTreeView: TextView
     private var receiverRegistered = false
 
-    // 在打开系统文件选择器之前暂存报告，避免返回后再次读取本机报告文件。
+    // 打开系统文件选择器前暂存完整报告，返回时不重新读取本机文件。
     private var pendingExportReport: String? = null
 
     private val reportReceiver = object : BroadcastReceiver() {
@@ -217,10 +217,10 @@ class MainActivity : Activity() {
                     preview.append(indent)
                         .append("[").append(node.optInt("index")).append("] ")
                         .append(className.ifBlank { "Unknown" })
-                    val text = node.optString("text").take(100)
+                    val nodeText = node.optString("text").take(100)
                     val description = node.optString("contentDescription").take(80)
                     val viewId = node.optString("viewIdResourceName")
-                    if (text.isNotBlank()) preview.append(" text=\"").append(text).append("\"")
+                    if (nodeText.isNotBlank()) preview.append(" text=\"").append(nodeText).append("\"")
                     if (description.isNotBlank()) preview.append(" desc=\"").append(description).append("\"")
                     if (viewId.isNotBlank()) preview.append(" id=").append(viewId)
                     preview.append(" {click=").append(node.optBoolean("clickable"))
@@ -230,7 +230,8 @@ class MainActivity : Activity() {
                         .append('\n')
                 }
                 if (nodes.length() > count) {
-                    preview.append("\n…还有 ").append(nodes.length() - count).append(" 个节点未在屏幕预览中显示；导出的 JSON 会包含报告内的全部节点。")
+                    preview.append("\n…还有 ").append(nodes.length() - count)
+                        .append(" 个节点未在屏幕预览中显示；导出的 JSON 会包含报告内的全部节点。")
                 }
             }
             nodeTreeView.text = preview.toString().ifBlank { "报告中没有节点详情。" }
@@ -240,10 +241,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * 将本机保存的完整 JSON 报告复制到系统剪贴板。
-     * 复制的是原始报告数据，不是界面上最多显示 180 个节点的预览文本。
-     */
+    /** 复制完整 JSON 报告，不受界面 180 个节点预览上限影响。 */
     private fun copyReport() {
         val report = InspectorStore.getLastReport(this)
         if (report.isNullOrBlank()) {
@@ -273,9 +271,7 @@ class MainActivity : Activity() {
         val byteCount = report.toByteArray(Charsets.UTF_8).size
 
         runCatching {
-            clipboard.setPrimaryClip(
-                ClipData.newPlainText("无障碍节点检测报告", report)
-            )
+            clipboard.setPrimaryClip(ClipData.newPlainText("无障碍节点检测报告", report))
         }.onSuccess {
             Toast.makeText(
                 this,
@@ -298,9 +294,13 @@ class MainActivity : Activity() {
             return
         }
 
-        // 缓存本次导出的完整报告，文件选择器返回时不再重新读取存储文件。
-        pendingExportReport = report
+        // 导出前先确认本机报告是有效 JSON。
+        if (runCatching { JSONObject(report) }.isFailure) {
+            Toast.makeText(this, "本机报告不是有效 JSON，无法导出。", Toast.LENGTH_LONG).show()
+            return
+        }
 
+        pendingExportReport = report
         val fileName = "accessibility-report-${System.currentTimeMillis()}.json"
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -313,7 +313,6 @@ class MainActivity : Activity() {
     @Deprecated("Uses the document creation contract for broad Android API compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-
         if (requestCode != REQUEST_CREATE_DOCUMENT) return
 
         if (resultCode != RESULT_OK) {
@@ -331,32 +330,39 @@ class MainActivity : Activity() {
         }
 
         runCatching {
-            val bytes = report.toByteArray(Charsets.UTF_8)
-            check(bytes.isNotEmpty()) { "报告内容为空，未写入文件。" }
+            val expectedBytes = report.toByteArray(Charsets.UTF_8)
+            check(expectedBytes.isNotEmpty()) { "报告内容为空，未写入文件。" }
+            JSONObject(report)
 
             val outputStream = contentResolver.openOutputStream(uri, "wt")
                 ?: error("无法打开所选文件位置")
-
             outputStream.use { stream ->
-                stream.write(bytes)
+                stream.write(expectedBytes)
                 stream.flush()
             }
 
-            // 重新读取目标文件校验实际写入结果，避免只提示成功却生成空文件。
-            val savedBytes = contentResolver.openInputStream(uri)?.use { input ->
-                input.readBytes()
-            } ?: error("文件已写入，但无法重新读取以验证内容")
+            // 重新读取目标文件，验证字节数、SHA-256 和 JSON 格式。
+            val savedBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: error("文件已写入，但无法重新读取以验证内容")
 
             check(savedBytes.isNotEmpty()) { "写入后文件仍然为空。" }
-            check(savedBytes.size == bytes.size) {
-                "文件校验失败：预期 ${bytes.size} 字节，实际 ${savedBytes.size} 字节。"
+            check(savedBytes.size == expectedBytes.size) {
+                "文件大小校验失败：预期 ${expectedBytes.size} 字节，实际 ${savedBytes.size} 字节。"
             }
 
-            bytes.size
+            val expectedHash = sha256(expectedBytes)
+            val savedHash = sha256(savedBytes)
+            check(savedHash == expectedHash) { "文件内容校验失败：SHA-256 不一致。" }
+
+            val savedText = savedBytes.toString(Charsets.UTF_8)
+            JSONObject(savedText)
+            check(savedText == report) { "文件内容与原始报告不一致。" }
+
+            expectedBytes.size
         }.onSuccess { byteCount ->
             Toast.makeText(
                 this,
-                "JSON 报告已导出并验证（${byteCount} 字节）。",
+                "JSON 报告已导出并完成内容校验（${byteCount} 字节）。",
                 Toast.LENGTH_LONG
             ).show()
         }.onFailure { error ->
@@ -367,6 +373,11 @@ class MainActivity : Activity() {
             ).show()
         }
     }
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { byte -> "%02x".format(byte) }
 
     private fun clearReport() {
         AlertDialog.Builder(this)
