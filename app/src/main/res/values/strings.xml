@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">无障碍节点检测器</string>
+    <string name="accessibility_service_label">无障碍节点检测服务</string>
+    <string name="accessibility_service_description">在用户主动开启监测后，读取当前窗口向无障碍服务提供的界面节点，并仅在本机生成检测报告。</string>
+</resources>
