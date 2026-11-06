@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import com.ttiaogou.accessibilityinspector.data.InspectorStore
 
@@ -26,13 +27,14 @@ class InspectorAccessibilityService : AccessibilityService() {
         if (eventPackage.isBlank() || eventPackage == packageName) return
 
         pendingPackageName = eventPackage
-        // Debounce frequent content-change events so a single page does not create dozens of reports.
+        // 合并短时间内连续发生的事件，减少同一页面重复生成报告。
         handler.removeCallbacks(captureRunnable)
-        handler.postDelayed(captureRunnable, 450L)
+        handler.postDelayed(captureRunnable, CAPTURE_DELAY_MS)
     }
 
-    private fun captureCurrentWindow(fallbackPackageName: String) {
+    private fun captureCurrentWindow(expectedPackageName: String) {
         if (!InspectorStore.isMonitoring(this)) return
+        if (expectedPackageName.isBlank() || expectedPackageName == packageName) return
 
         val root = try {
             rootInActiveWindow
@@ -42,19 +44,36 @@ class InspectorAccessibilityService : AccessibilityService() {
             null
         } ?: return
 
-        val actualPackage = runCatching { root.packageName?.toString().orEmpty() }.getOrDefault("")
-        if (actualPackage == packageName) return
+        try {
+            val actualPackage = runCatching {
+                root.packageName?.toString().orEmpty()
+            }.getOrDefault("")
 
-        val snapshot = runCatching {
-            NodeInspector.inspect(root, fallbackPackageName)
-        }.getOrNull() ?: return
+            // 延迟采集期间窗口可能已经切换；包名不一致时丢弃本次采集，
+            // 防止把 Launcher、系统界面或另一个 App 的节点保存到目标报告。
+            if (actualPackage.isNotBlank() && actualPackage != expectedPackageName) {
+                Log.d(TAG, "Skip stale accessibility event: expected=$expectedPackageName actual=$actualPackage")
+                return
+            }
+            if (actualPackage == packageName) return
 
-        val json = runCatching { snapshot.toJsonString() }.getOrNull() ?: return
-        InspectorStore.saveReport(this, json)
+            val snapshot = runCatching {
+                NodeInspector.inspect(
+                    root,
+                    actualPackage.ifBlank { expectedPackageName }
+                )
+            }.getOrNull() ?: return
 
-        sendBroadcast(
-            Intent(ACTION_REPORT_UPDATED).setPackage(packageName)
-        )
+            val json = runCatching { snapshot.toJsonString() }.getOrNull() ?: return
+            if (!InspectorStore.saveReport(this, json)) {
+                Log.e(TAG, "Failed to save accessibility report for $expectedPackageName")
+                return
+            }
+
+            sendBroadcast(Intent(ACTION_REPORT_UPDATED).setPackage(packageName))
+        } finally {
+            // AccessibilityNodeInfo.recycle() 已弃用；由系统管理节点对象生命周期。
+        }
     }
 
     override fun onInterrupt() {
@@ -67,6 +86,9 @@ class InspectorAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        private const val TAG = "InspectorService"
+        private const val CAPTURE_DELAY_MS = 450L
+
         const val ACTION_REPORT_UPDATED =
             "com.ttiaogou.accessibilityinspector.ACTION_REPORT_UPDATED"
     }
