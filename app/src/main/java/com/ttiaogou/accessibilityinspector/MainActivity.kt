@@ -32,6 +32,9 @@ class MainActivity : Activity() {
     private lateinit var nodeTreeView: TextView
     private var receiverRegistered = false
 
+    // 在打开系统文件选择器之前暂存报告，避免返回后再次读取本机报告文件。
+    private var pendingExportReport: String? = null
+
     private val reportReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             renderLastReport()
@@ -240,6 +243,9 @@ class MainActivity : Activity() {
             return
         }
 
+        // 缓存本次导出的完整报告，文件选择器返回时不再重新读取存储文件。
+        pendingExportReport = report
+
         val fileName = "accessibility-report-${System.currentTimeMillis()}.json"
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -252,17 +258,58 @@ class MainActivity : Activity() {
     @Deprecated("Uses the document creation contract for broad Android API compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_CREATE_DOCUMENT || resultCode != RESULT_OK) return
-        val uri: Uri = data?.data ?: return
-        val report = InspectorStore.getLastReport(this) ?: return
+
+        if (requestCode != REQUEST_CREATE_DOCUMENT) return
+
+        if (resultCode != RESULT_OK) {
+            pendingExportReport = null
+            return
+        }
+
+        val uri: Uri? = data?.data
+        val report = pendingExportReport
+        pendingExportReport = null
+
+        if (uri == null || report.isNullOrBlank()) {
+            Toast.makeText(this, "报告内容为空，无法导出。", Toast.LENGTH_LONG).show()
+            return
+        }
+
         runCatching {
-            contentResolver.openOutputStream(uri)?.bufferedWriter(Charsets.UTF_8)?.use { writer ->
-                writer.write(report)
-            } ?: error("无法打开所选文件位置")
-        }.onSuccess {
-            Toast.makeText(this, "JSON 报告已导出。", Toast.LENGTH_LONG).show()
+            val bytes = report.toByteArray(Charsets.UTF_8)
+            check(bytes.isNotEmpty()) { "报告内容为空，未写入文件。" }
+
+            val outputStream = contentResolver.openOutputStream(uri, "wt")
+                ?: error("无法打开所选文件位置")
+
+            outputStream.use { stream ->
+                stream.write(bytes)
+                stream.flush()
+            }
+
+            // 重新读取目标文件校验实际写入结果，避免只提示成功却生成空文件。
+            val savedBytes = contentResolver.openInputStream(uri)?.use { input ->
+                input.readBytes()
+            } ?: error("文件已写入，但无法重新读取以验证内容")
+
+            check(savedBytes.isNotEmpty()) { "写入后文件仍然为空。" }
+            check(savedBytes.size == bytes.size) {
+                "文件校验失败：预期 ${bytes.size} 字节，实际 ${savedBytes.size} 字节。"
+            }
+
+            bytes.size
+        }.onSuccess { byteCount ->
+            Toast.makeText(
+                this,
+                "JSON 报告已导出并验证（${byteCount} 字节）。",
+                Toast.LENGTH_LONG
+            ).show()
         }.onFailure { error ->
-            Toast.makeText(this, "导出失败：${error.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                this,
+                "导出失败：${error.message ?: "未知错误"}",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
