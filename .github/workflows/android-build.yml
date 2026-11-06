@@ -17,6 +17,7 @@ jobs:
   build:
     name: Build debug APK
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -28,13 +29,12 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-  uses: android-actions/setup-android@v3
-  with:
-    packages: platform-tools
-    accept-android-sdk-licenses: true
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: true
 
-
-      - name: Install Android 36 platform and Android build tools
+      - name: Install Android platform and build tools
         run: |
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "platforms;android-36" "build-tools;35.0.0" "platform-tools"
