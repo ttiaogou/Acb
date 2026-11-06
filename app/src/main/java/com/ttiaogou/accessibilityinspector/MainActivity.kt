@@ -1,9 +1,12 @@
+
 package com.ttiaogou.accessibilityinspector
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -118,6 +121,7 @@ class MainActivity : Activity() {
 
         root.addView(space(14))
         root.addView(actionButton("导出 JSON 报告") { exportReport() })
+        root.addView(actionButton("复制检测结果") { copyReport() })
         root.addView(actionButton("刷新报告") { renderLastReport() })
         root.addView(actionButton("清除本机报告") { clearReport() })
 
@@ -233,6 +237,57 @@ class MainActivity : Activity() {
         }.onFailure { error ->
             reportSummaryView.text = "报告解析失败：${error.message ?: "未知错误"}"
             nodeTreeView.text = jsonText.take(5000)
+        }
+    }
+
+    /**
+     * 将本机保存的完整 JSON 报告复制到系统剪贴板。
+     * 复制的是原始报告数据，不是界面上最多显示 180 个节点的预览文本。
+     */
+    private fun copyReport() {
+        val report = InspectorStore.getLastReport(this)
+        if (report.isNullOrBlank()) {
+            Toast.makeText(this, "目前没有可复制的检测报告。", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val reportObject = runCatching { JSONObject(report) }.getOrElse { error ->
+            Toast.makeText(
+                this,
+                "报告格式无效，无法复制 JSON：${error.message ?: "解析失败"}",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        if (clipboard == null) {
+            Toast.makeText(this, "无法访问系统剪贴板。", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val nodeArray = reportObject.optJSONArray("nodes")
+        val stats = reportObject.optJSONObject("stats")
+        val nodeCount = stats?.optInt("total", nodeArray?.length() ?: 0)
+            ?: (nodeArray?.length() ?: 0)
+        val byteCount = report.toByteArray(Charsets.UTF_8).size
+
+        runCatching {
+            clipboard.setPrimaryClip(
+                ClipData.newPlainText("无障碍节点检测报告", report)
+            )
+        }.onSuccess {
+            Toast.makeText(
+                this,
+                "已复制完整检测报告（${nodeCount} 个节点，${byteCount} 字节）。",
+                Toast.LENGTH_LONG
+            ).show()
+        }.onFailure { error ->
+            Toast.makeText(
+                this,
+                "复制失败：${error.message ?: "未知错误"}",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
