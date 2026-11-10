@@ -80,7 +80,7 @@ class VisualTreeActivity : Activity() {
         root.addView(headerView)
 
         searchInput = EditText(this).apply {
-            singleLine = true
+            isSingleLine = true
             hint = "搜索文字、描述、类型、资源 ID 或路径"
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit

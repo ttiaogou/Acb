@@ -89,7 +89,7 @@ class MainActivity : Activity() {
         root.addView(space(10))
         root.addView(text("目标应用包名（例如 com.immomo.momo）", 14f, true))
         targetPackageInput = EditText(this).apply {
-            singleLine = true
+            isSingleLine = true
             hint = "输入要检测的应用包名"
             setText(InspectorStore.getTargetPackage(this@MainActivity))
         }
