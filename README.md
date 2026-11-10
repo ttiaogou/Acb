@@ -1,4 +1,4 @@
-# Acb Visual Inspector V2
+# Acb Visual Inspector V2.1 — Node Visualization
 
 基于原仓库 `https://github.com/ttiaogou/Acb` 的节点采集思路和已交付文件整理的独立 Android Studio 工程。当前版本聚焦于无障碍节点可视化，不包含 AI 回复或消息发送功能。
 
@@ -46,3 +46,14 @@
 ## 构建状态
 
 交付环境没有 Android SDK、Gradle 安装和 Android 真机，因而无法在此处完成 `assembleDebug` 或真机测试。该工程已完成文件结构和配置整合，但仍需在 Android Studio 中同步、编译和设备验证。不能将本包视为已通过编译或测试的 APK。
+
+## 节点可视化交互（本次更新）
+
+- 屏幕映射面板按设备屏幕长宽比缩放展示当前快照中的 `boundsInScreen`。
+- 普通节点以灰蓝色边框表示，可点击节点以橙色边框表示，当前选中节点以红色边框表示。
+- 点击节点树项目会同步选中屏幕映射矩形；点击映射矩形也会反向选中节点树项目。
+- 新增“可点击 / 可编辑 / 可滚动”筛选；点击判断同时参考 `clickable` 和 actions 中的 `ACTION_CLICK`（id 16），不只依赖 `className`。
+- 节点详情增加 `nodeKey`。该 key 仅在当前快照内唯一，不承诺跨快照稳定。
+- 负坐标允许参与屏幕裁剪映射；无效矩形（宽高不大于零）会被忽略。
+
+本次只更新节点可视化界面和相关文档，未改变节点采集策略、报告字段、密码过滤和 JSON 导出逻辑。Android 构建与真机验证仍待执行，具体见 `BUILD_AND_TEST.md`。

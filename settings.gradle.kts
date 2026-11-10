@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AcbVisualInspectorV2"
+rootProject.name = "AcbVisualInspectorV21"
 include(":app")
