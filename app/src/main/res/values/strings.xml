@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">无障碍节点检测器</string>
-    <string name="accessibility_service_label">无障碍节点检测服务</string>
-    <string name="accessibility_service_description">在用户主动开启监测后，读取当前窗口向无障碍服务提供的界面节点，并仅在本机生成检测报告。</string>
+    <string name="app_name">Acb 无障碍节点查看器</string>
+    <string name="accessibility_service_label">Acb 节点检测服务</string>
+    <string name="accessibility_service_description">仅在用户明确开启监测并指定目标应用后，读取该应用当前窗口向无障碍服务公开的节点，并在本机保存报告。</string>
 </resources>

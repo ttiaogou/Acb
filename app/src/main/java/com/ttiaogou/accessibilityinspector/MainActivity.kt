@@ -4,8 +4,6 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -16,39 +14,33 @@ import android.provider.Settings
 import android.view.View
 import android.view.accessibility.AccessibilityManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.ttiaogou.accessibilityinspector.accessibility.InspectorAccessibilityService
 import com.ttiaogou.accessibilityinspector.data.InspectorStore
+import com.ttiaogou.accessibilityinspector.visual.VisualTreeActivity
 import org.json.JSONObject
-import java.security.MessageDigest
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class MainActivity : Activity() {
-    private lateinit var serviceStatusView: TextView
+    private lateinit var serviceStatus: TextView
+    private lateinit var targetPackageInput: EditText
     private lateinit var monitorButton: Button
-    private lateinit var reportSummaryView: TextView
-    private lateinit var nodeTreeView: TextView
+    private lateinit var reportSummary: TextView
     private var receiverRegistered = false
-
-    // 打开系统文件选择器前暂存完整报告，返回时不重新读取本机文件。
     private var pendingExportReport: String? = null
 
     private val reportReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            renderLastReport()
-        }
+        override fun onReceive(context: Context?, intent: Intent?) = renderReportSummary()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildScreen()
         refreshStatus()
-        renderLastReport()
+        renderReportSummary()
     }
 
     override fun onResume() {
@@ -64,7 +56,7 @@ class MainActivity : Activity() {
             receiverRegistered = true
         }
         refreshStatus()
-        renderLastReport()
+        renderReportSummary()
     }
 
     override fun onPause() {
@@ -76,64 +68,79 @@ class MainActivity : Activity() {
     }
 
     private fun buildScreen() {
-        val scrollView = ScrollView(this)
+        val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(22), dp(18), dp(30))
         }
-        scrollView.addView(root)
-        setContentView(scrollView)
+        scroll.addView(root)
+        setContentView(scroll)
 
-        root.addView(text("无障碍节点检测器", 25f, true))
-        root.addView(text("读取当前窗口通过 Android 无障碍接口提供的节点，并在本机生成报告。", 14f))
+        root.addView(text("Acb 无障碍节点查看器 V2", 24f, true))
+        root.addView(text("指定一个目标应用，只读取该应用通过 Android 无障碍接口公开的当前窗口节点。", 14f))
         root.addView(space(14))
 
-        serviceStatusView = text("无障碍服务状态：检查中", 15f, true)
-        root.addView(serviceStatusView)
-        root.addView(space(8))
-
-        root.addView(actionButton("打开无障碍设置") {
+        serviceStatus = text("无障碍服务：检查中", 15f, true)
+        root.addView(serviceStatus)
+        root.addView(actionButton("打开系统无障碍设置") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         })
 
+        root.addView(space(10))
+        root.addView(text("目标应用包名（例如 com.immomo.momo）", 14f, true))
+        targetPackageInput = EditText(this).apply {
+            singleLine = true
+            hint = "输入要检测的应用包名"
+            setText(InspectorStore.getTargetPackage(this@MainActivity))
+        }
+        root.addView(targetPackageInput)
+        root.addView(actionButton("保存目标应用") { saveTargetPackage(showToast = true) })
+
         monitorButton = actionButton("开始监测") { toggleMonitoring() }
         root.addView(monitorButton)
-        root.addView(space(8))
-        root.addView(text("使用方法：先开启上方的无障碍服务，再开始监测；切换到需要检测的 App，并打开不同页面。检测器会在页面变化后更新报告。", 13f))
-        root.addView(space(8))
-        root.addView(text("隐私提示：节点报告可能包含屏幕上可见的文字，例如搜索内容或聊天文本。数据只保存在本机；只有你主动导出时才会写入所选位置。", 13f))
-
-        root.addView(space(20))
-        root.addView(text("页面统计", 19f, true))
-        reportSummaryView = text("尚无检测报告。开启监测并切换到目标 App 页面。", 14f)
-        reportSummaryView.setPadding(dp(12), dp(12), dp(12), dp(12))
-        reportSummaryView.setBackgroundColor(0xFFF1F3F5.toInt())
-        root.addView(reportSummaryView)
-
-        root.addView(space(14))
-        root.addView(text("节点树预览（最多显示 180 个节点）", 19f, true))
-        nodeTreeView = text("等待检测数据…", 12f)
-        nodeTreeView.typeface = android.graphics.Typeface.MONOSPACE
-        nodeTreeView.setTextIsSelectable(true)
-        nodeTreeView.setPadding(dp(12), dp(12), dp(12), dp(12))
-        nodeTreeView.setBackgroundColor(0xFFF7F7F7.toInt())
-        root.addView(nodeTreeView)
-
-        root.addView(space(14))
+        root.addView(actionButton("打开可视化节点树") {
+            startActivity(Intent(this, VisualTreeActivity::class.java))
+        })
         root.addView(actionButton("导出 JSON 报告") { exportReport() })
-        root.addView(actionButton("复制检测结果") { copyReport() })
-        root.addView(actionButton("刷新报告") { renderLastReport() })
+        root.addView(actionButton("刷新报告摘要") { renderReportSummary() })
         root.addView(actionButton("清除本机报告") { clearReport() })
 
+        root.addView(space(18))
+        root.addView(text("最近一次采集", 19f, true))
+        reportSummary = text("尚无报告。开启监测并切换到目标应用页面。", 14f)
+        reportSummary.setPadding(dp(12), dp(12), dp(12), dp(12))
+        reportSummary.setBackgroundColor(0xFFF1F3F5.toInt())
+        root.addView(reportSummary)
+
         root.addView(space(12))
-        root.addView(text("检测范围说明：统计的是当前窗口中可由无障碍服务访问到的节点，不等同于 App 内部所有 View。某些自绘界面、Web 内容或受保护窗口可能只暴露部分节点。", 12f))
+        root.addView(text(
+            "使用步骤：1. 开启无障碍服务；2. 输入目标应用包名并保存；3. 开始监测；4. 切换到目标应用需要检查的页面；5. 返回本工具打开节点树。报告仅保存在本机，导出由你主动发起。",
+            13f
+        ))
+        root.addView(space(8))
+        root.addView(text(
+            "边界说明：只能读取目标应用主动向无障碍服务公开的节点。自绘画布、受保护窗口或未暴露文本的控件可能无法读取。密码节点及其子节点的文本和描述会被过滤。",
+            12f
+        ))
+    }
+
+    private fun saveTargetPackage(showToast: Boolean): Boolean {
+        val value = targetPackageInput.text?.toString()?.trim().orEmpty()
+        val valid = value.matches(Regex("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+"))
+        if (!valid) {
+            if (showToast) Toast.makeText(this, "请输入有效包名，例如 com.immomo.momo。", Toast.LENGTH_LONG).show()
+            return false
+        }
+        InspectorStore.setTargetPackage(this, value)
+        if (showToast) Toast.makeText(this, "已保存目标应用：$value", Toast.LENGTH_SHORT).show()
+        return true
     }
 
     private fun toggleMonitoring() {
         if (!isInspectorServiceEnabled()) {
             AlertDialog.Builder(this)
-                .setTitle("需要先开启无障碍服务")
-                .setMessage("请在系统无障碍设置中启用“无障碍节点检测服务”，返回后再开始监测。")
+                .setTitle("需要开启无障碍服务")
+                .setMessage("请在系统无障碍设置中启用“Acb 节点检测服务”，返回后再开始监测。")
                 .setPositiveButton("打开设置") { _, _ ->
                     startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                 }
@@ -142,23 +149,26 @@ class MainActivity : Activity() {
             return
         }
 
-        val newState = !InspectorStore.isMonitoring(this)
-        InspectorStore.setMonitoring(this, newState)
+        val currentlyMonitoring = InspectorStore.isMonitoring(this)
+        if (currentlyMonitoring) {
+            InspectorStore.setMonitoring(this, false)
+        } else {
+            if (!saveTargetPackage(showToast = false)) {
+                Toast.makeText(this, "请先填写有效的目标应用包名。", Toast.LENGTH_LONG).show()
+                return
+            }
+            InspectorStore.setMonitoring(this, true)
+        }
         refreshStatus()
-        Toast.makeText(this, if (newState) "已开始监测。请切换到目标 App。" else "已停止监测。", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshStatus() {
         val enabled = isInspectorServiceEnabled()
         val monitoring = InspectorStore.isMonitoring(this)
-        serviceStatusView.text = buildString {
-            append("无障碍服务：")
-            append(if (enabled) "已开启" else "未开启")
-            append("\n页面监测：")
-            append(if (monitoring) "运行中" else "已停止")
-        }
+        serviceStatus.text = "无障碍服务：${if (enabled) "已开启" else "未开启"}\n" +
+            "页面监测：${if (monitoring) "运行中" else "已停止"}\n" +
+            "目标应用：${InspectorStore.getTargetPackage(this).ifBlank { "未设置" }}"
         monitorButton.text = if (monitoring) "停止监测" else "开始监测"
-        monitorButton.isEnabled = true
     }
 
     private fun isInspectorServiceEnabled(): Boolean {
@@ -171,250 +181,107 @@ class MainActivity : Activity() {
             }
     }
 
-    private fun renderLastReport() {
-        val jsonText = InspectorStore.getLastReport(this)
-        if (jsonText.isNullOrBlank()) {
-            reportSummaryView.text = "尚无检测报告。开启监测并切换到目标 App 页面。"
-            nodeTreeView.text = "等待检测数据…"
+    private fun renderReportSummary() {
+        if (!::reportSummary.isInitialized) return
+        val raw = InspectorStore.getLastReport(this)
+        if (raw.isNullOrBlank()) {
+            reportSummary.text = "尚无报告。开启监测并切换到目标应用页面。"
+            refreshStatus()
             return
         }
-
         runCatching {
-            val root = JSONObject(jsonText)
+            val root = JSONObject(raw)
             val stats = root.optJSONObject("stats") ?: JSONObject()
-            val capturedAt = root.optLong("capturedAtMillis", 0L)
-            val dateText = if (capturedAt > 0L) {
-                SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(capturedAt))
-            } else "未知"
-
-            reportSummaryView.text = buildString {
-                append("目标包名：${root.optString("packageName", "未知")}\n")
-                append("采集时间：$dateText\n")
-                append("根节点类型：${root.optString("rootClassName", "未知")}\n")
+            reportSummary.text = buildString {
+                append("应用：${root.optString("packageName")}\n")
+                append("采集时间：${root.optLong("capturedAtMillis")}\n")
                 append("节点总数：${stats.optInt("total")}\n")
-                append("含文本节点：${stats.optInt("withText")}\n")
-                append("含描述节点：${stats.optInt("withDescription")}\n")
-                append("按钮类节点：${stats.optInt("buttonLike")}\n")
-                append("输入框/可编辑节点：${stats.optInt("editTexts")}\n")
+                append("含文字节点：${stats.optInt("withText")}\n")
                 append("可点击节点：${stats.optInt("clickable")}\n")
-                append("可长按节点：${stats.optInt("longClickable")}\n")
-                append("可滚动节点：${stats.optInt("scrollable")}\n")
-                append("可聚焦节点：${stats.optInt("focusable")}\n")
-                append("含资源 ID 节点：${stats.optInt("resourceIds")}\n")
-                append("图片类节点：${stats.optInt("imageLike")}")
-                if (root.optBoolean("truncated")) append("\n提示：节点数量达到本工具上限，报告可能不完整。")
+                append("可编辑节点：${stats.optInt("editTexts")}\n")
+                append("密码字段（仅计数，内容已过滤）：${stats.optInt("passwordFields")}\n")
+                if (root.optBoolean("truncated")) append("注意：达到节点数量上限，报告不完整。")
             }
-
-            val nodes = root.optJSONArray("nodes")
-            val preview = StringBuilder()
-            if (nodes != null) {
-                val count = minOf(nodes.length(), 180)
-                for (i in 0 until count) {
-                    val node = nodes.optJSONObject(i) ?: continue
-                    val depth = node.optInt("depth").coerceIn(0, 20)
-                    val indent = "  ".repeat(depth)
-                    val className = node.optString("className").substringAfterLast('.')
-                    preview.append(indent)
-                        .append("[").append(node.optInt("index")).append("] ")
-                        .append(className.ifBlank { "Unknown" })
-                    val nodeText = node.optString("text").take(100)
-                    val description = node.optString("contentDescription").take(80)
-                    val viewId = node.optString("viewIdResourceName")
-                    if (nodeText.isNotBlank()) preview.append(" text=\"").append(nodeText).append("\"")
-                    if (description.isNotBlank()) preview.append(" desc=\"").append(description).append("\"")
-                    if (viewId.isNotBlank()) preview.append(" id=").append(viewId)
-                    preview.append(" {click=").append(node.optBoolean("clickable"))
-                        .append(", edit=").append(node.optBoolean("editable"))
-                        .append(", scroll=").append(node.optBoolean("scrollable"))
-                        .append("} bounds=").append(node.optString("boundsInScreen"))
-                        .append('\n')
-                }
-                if (nodes.length() > count) {
-                    preview.append("\n…还有 ").append(nodes.length() - count)
-                        .append(" 个节点未在屏幕预览中显示；导出的 JSON 会包含报告内的全部节点。")
-                }
-            }
-            nodeTreeView.text = preview.toString().ifBlank { "报告中没有节点详情。" }
-        }.onFailure { error ->
-            reportSummaryView.text = "报告解析失败：${error.message ?: "未知错误"}"
-            nodeTreeView.text = jsonText.take(5000)
+        }.onFailure {
+            reportSummary.text = "报告解析失败：${it.message}"
         }
-    }
-
-    /** 复制完整 JSON 报告，不受界面 180 个节点预览上限影响。 */
-    private fun copyReport() {
-        val report = InspectorStore.getLastReport(this)
-        if (report.isNullOrBlank()) {
-            Toast.makeText(this, "目前没有可复制的检测报告。", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val reportObject = runCatching { JSONObject(report) }.getOrElse { error ->
-            Toast.makeText(
-                this,
-                "报告格式无效，无法复制 JSON：${error.message ?: "解析失败"}",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        val clipboard = getSystemService(ClipboardManager::class.java)
-        if (clipboard == null) {
-            Toast.makeText(this, "无法访问系统剪贴板。", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        val nodeArray = reportObject.optJSONArray("nodes")
-        val stats = reportObject.optJSONObject("stats")
-        val nodeCount = stats?.optInt("total", nodeArray?.length() ?: 0)
-            ?: (nodeArray?.length() ?: 0)
-        val byteCount = report.toByteArray(Charsets.UTF_8).size
-
-        runCatching {
-            clipboard.setPrimaryClip(ClipData.newPlainText("无障碍节点检测报告", report))
-        }.onSuccess {
-            Toast.makeText(
-                this,
-                "已复制完整检测报告（${nodeCount} 个节点，${byteCount} 字节）。",
-                Toast.LENGTH_LONG
-            ).show()
-        }.onFailure { error ->
-            Toast.makeText(
-                this,
-                "复制失败：${error.message ?: "未知错误"}",
-                Toast.LENGTH_LONG
-            ).show()
-        }
+        refreshStatus()
     }
 
     private fun exportReport() {
         val report = InspectorStore.getLastReport(this)
         if (report.isNullOrBlank()) {
-            Toast.makeText(this, "目前没有可导出的报告。", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "没有可导出的报告。", Toast.LENGTH_SHORT).show()
             return
         }
-
-        // 导出前先确认本机报告是有效 JSON。
-        if (runCatching { JSONObject(report) }.isFailure) {
-            Toast.makeText(this, "本机报告不是有效 JSON，无法导出。", Toast.LENGTH_LONG).show()
+        runCatching { JSONObject(report) }.onFailure {
+            Toast.makeText(this, "报告不是有效 JSON。", Toast.LENGTH_LONG).show()
             return
         }
-
         pendingExportReport = report
-        val fileName = "accessibility-report-${System.currentTimeMillis()}.json"
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, fileName)
+            putExtra(Intent.EXTRA_TITLE, "acb-accessibility-${System.currentTimeMillis()}.json")
         }
         startActivityForResult(intent, REQUEST_CREATE_DOCUMENT)
     }
 
-    @Deprecated("Uses the document creation contract for broad Android API compatibility")
+    @Deprecated("Uses the platform document picker for compatibility with the existing project.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_CREATE_DOCUMENT) return
-
-        if (resultCode != RESULT_OK) {
-            pendingExportReport = null
-            return
-        }
-
-        val uri: Uri? = data?.data
         val report = pendingExportReport
         pendingExportReport = null
-
-        if (uri == null || report.isNullOrBlank()) {
-            Toast.makeText(this, "报告内容为空，无法导出。", Toast.LENGTH_LONG).show()
-            return
-        }
-
+        if (resultCode != RESULT_OK || report.isNullOrBlank()) return
+        val uri: Uri = data?.data ?: return
         runCatching {
-            val expectedBytes = report.toByteArray(Charsets.UTF_8)
-            check(expectedBytes.isNotEmpty()) { "报告内容为空，未写入文件。" }
-            JSONObject(report)
-
-            val outputStream = contentResolver.openOutputStream(uri, "wt")
-                ?: error("无法打开所选文件位置")
-            outputStream.use { stream ->
-                stream.write(expectedBytes)
-                stream.flush()
-            }
-
-            // 重新读取目标文件，验证字节数、SHA-256 和 JSON 格式。
-            val savedBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: error("文件已写入，但无法重新读取以验证内容")
-
-            check(savedBytes.isNotEmpty()) { "写入后文件仍然为空。" }
-            check(savedBytes.size == expectedBytes.size) {
-                "文件大小校验失败：预期 ${expectedBytes.size} 字节，实际 ${savedBytes.size} 字节。"
-            }
-
-            val expectedHash = sha256(expectedBytes)
-            val savedHash = sha256(savedBytes)
-            check(savedHash == expectedHash) { "文件内容校验失败：SHA-256 不一致。" }
-
-            val savedText = savedBytes.toString(Charsets.UTF_8)
-            JSONObject(savedText)
-            check(savedText == report) { "文件内容与原始报告不一致。" }
-
-            expectedBytes.size
-        }.onSuccess { byteCount ->
-            Toast.makeText(
-                this,
-                "JSON 报告已导出并完成内容校验（${byteCount} 字节）。",
-                Toast.LENGTH_LONG
-            ).show()
-        }.onFailure { error ->
-            Toast.makeText(
-                this,
-                "导出失败：${error.message ?: "未知错误"}",
-                Toast.LENGTH_LONG
-            ).show()
+            contentResolver.openOutputStream(uri, "wt")?.use {
+                it.write(report.toByteArray(Charsets.UTF_8))
+                it.flush()
+            } ?: error("无法打开所选文件位置")
+            val saved = contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                ?: error("无法验证导出文件")
+            check(saved == report) { "导出内容校验不一致" }
+        }.onSuccess {
+            Toast.makeText(this, "JSON 报告导出并校验成功。", Toast.LENGTH_LONG).show()
+        }.onFailure {
+            Toast.makeText(this, "导出失败：${it.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun sha256(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString("") { byte -> "%02x".format(byte) }
-
     private fun clearReport() {
         AlertDialog.Builder(this)
-            .setTitle("清除报告？")
-            .setMessage("这会删除本机保存的上一份检测报告，不会影响目标 App。")
+            .setTitle("清除本机报告？")
+            .setMessage("只删除本工具保存的最近一次节点报告。")
             .setPositiveButton("清除") { _, _ ->
                 InspectorStore.clearReport(this)
-                renderLastReport()
-                Toast.makeText(this, "报告已清除。", Toast.LENGTH_SHORT).show()
+                renderReportSummary()
             }
             .setNegativeButton("取消", null)
             .show()
     }
 
-    private fun actionButton(label: String, action: () -> Unit): Button =
-        Button(this).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { action() }
-        }
-
-    private fun text(value: String, sizeSp: Float, bold: Boolean = false): TextView =
-        TextView(this).apply {
-            text = value
-            textSize = sizeSp
-            setTextColor(0xFF202124.toInt())
-            if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-
-    private fun space(heightDp: Int): View = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(1, dp(heightDp))
+    private fun actionButton(label: String, action: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        setOnClickListener { action() }
     }
 
-    private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density + 0.5f).toInt()
+    private fun text(value: String, size: Float, bold: Boolean = false) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(0xFF202124.toInt())
+        if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
+    }
+
+    private fun space(dpValue: Int) = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(1, dp(dpValue))
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
-        private const val REQUEST_CREATE_DOCUMENT = 4102
+        private const val REQUEST_CREATE_DOCUMENT = 8102
     }
 }

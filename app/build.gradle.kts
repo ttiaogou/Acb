@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,8 +13,8 @@ android {
         applicationId = "com.ttiaogou.accessibilityinspector"
         minSdk = 23
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
     }
 
     compileOptions {
@@ -22,10 +23,10 @@ android {
     }
 
     kotlin {
-    compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_17)
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
     }
-}
 
     buildTypes {
         debug {

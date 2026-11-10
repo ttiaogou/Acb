@@ -10,7 +10,7 @@ import com.ttiaogou.accessibilityinspector.data.InspectorStore
 
 class InspectorAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
-    private var pendingPackageName: String = ""
+    private var pendingPackageName = ""
     private lateinit var highlightOverlay: NodeHighlightOverlay
 
     private val captureRunnable = Runnable { captureCurrentWindow(pendingPackageName) }
@@ -24,54 +24,63 @@ class InspectorAccessibilityService : AccessibilityService() {
         val eventPackage = event.packageName?.toString().orEmpty()
         if (eventPackage.isBlank() || eventPackage == packageName) return
 
-        // 用户从检查器返回目标应用时，显示刚才选中的节点边框。
         showPendingHighlightIfMatches(eventPackage)
 
         if (!InspectorStore.isMonitoring(this)) return
+        val targetPackage = InspectorStore.getTargetPackage(this)
+        if (targetPackage.isBlank() || eventPackage != targetPackage) return
+
         pendingPackageName = eventPackage
         handler.removeCallbacks(captureRunnable)
         handler.postDelayed(captureRunnable, CAPTURE_DELAY_MS)
     }
 
     private fun showPendingHighlightIfMatches(eventPackage: String) {
-        val prefs = getSharedPreferences("node_highlight", MODE_PRIVATE)
-        if (!prefs.getBoolean("pending", false)) return
-        if (prefs.getString("package", null) != eventPackage) return
+        val prefs = getSharedPreferences(HIGHLIGHT_PREFS, MODE_PRIVATE)
+        if (!prefs.getBoolean(KEY_PENDING, false)) return
+        if (prefs.getString(KEY_PACKAGE, null) != eventPackage) return
 
-        val left = prefs.getInt("left", 0)
-        val top = prefs.getInt("top", 0)
-        val right = prefs.getInt("right", 0)
-        val bottom = prefs.getInt("bottom", 0)
-        prefs.edit().putBoolean("pending", false).apply()
+        val requestedAt = prefs.getLong(KEY_REQUESTED_AT, 0L)
+        prefs.edit().putBoolean(KEY_PENDING, false).apply()
+        if (System.currentTimeMillis() - requestedAt > HIGHLIGHT_TTL_MS) return
 
-        if (right > left && bottom > top) {
-            if (::highlightOverlay.isInitialized) {
-                highlightOverlay.show(left, top, right, bottom)
-            }
+        val left = prefs.getInt(KEY_LEFT, 0)
+        val top = prefs.getInt(KEY_TOP, 0)
+        val right = prefs.getInt(KEY_RIGHT, 0)
+        val bottom = prefs.getInt(KEY_BOTTOM, 0)
+        if (right > left && bottom > top && ::highlightOverlay.isInitialized) {
+            highlightOverlay.show(left, top, right, bottom)
         }
     }
 
     private fun captureCurrentWindow(expectedPackageName: String) {
         if (!InspectorStore.isMonitoring(this)) return
-        if (expectedPackageName.isBlank() || expectedPackageName == packageName) return
+        if (expectedPackageName.isBlank()) return
+        if (InspectorStore.getTargetPackage(this) != expectedPackageName) return
 
         val root = try { rootInActiveWindow } catch (_: Exception) { null } ?: return
         try {
-            val actualPackage = runCatching { root.packageName?.toString().orEmpty() }.getOrDefault("")
-            if (actualPackage.isNotBlank() && actualPackage != expectedPackageName) return
-            if (actualPackage == packageName) return
+            val actualPackage = runCatching { root.packageName?.toString().orEmpty() }
+                .getOrDefault("")
+            if (actualPackage != expectedPackageName) return
 
             val snapshot = runCatching {
-                NodeInspector.inspect(root, actualPackage.ifBlank { expectedPackageName })
-            }.getOrNull() ?: return
-            val json = runCatching { snapshot.toJsonString() }.getOrNull() ?: return
+                NodeInspector.inspect(root, actualPackage)
+            }.getOrElse { error ->
+                Log.e(TAG, "Node inspection failed", error)
+                return
+            }
+            val json = runCatching { snapshot.toJsonString() }.getOrElse { error ->
+                Log.e(TAG, "JSON serialization failed", error)
+                return
+            }
             if (!InspectorStore.saveReport(this, json)) {
                 Log.e(TAG, "Failed to save accessibility report for $expectedPackageName")
                 return
             }
             sendBroadcast(Intent(ACTION_REPORT_UPDATED).setPackage(packageName))
-        } finally {
-            // AccessibilityNodeInfo 的生命周期由 Android 框架管理。
+        } catch (error: Exception) {
+            Log.e(TAG, "Capture failed", error)
         }
     }
 
@@ -89,6 +98,16 @@ class InspectorAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "InspectorService"
         private const val CAPTURE_DELAY_MS = 450L
+        private const val HIGHLIGHT_PREFS = "node_highlight"
+        private const val KEY_PENDING = "pending"
+        private const val KEY_PACKAGE = "package"
+        private const val KEY_LEFT = "left"
+        private const val KEY_TOP = "top"
+        private const val KEY_RIGHT = "right"
+        private const val KEY_BOTTOM = "bottom"
+        private const val KEY_REQUESTED_AT = "requested_at"
+        private const val HIGHLIGHT_TTL_MS = 15_000L
+
         const val ACTION_REPORT_UPDATED =
             "com.ttiaogou.accessibilityinspector.ACTION_REPORT_UPDATED"
     }

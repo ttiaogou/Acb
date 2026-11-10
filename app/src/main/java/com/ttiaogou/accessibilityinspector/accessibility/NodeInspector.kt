@@ -1,6 +1,7 @@
 package com.ttiaogou.accessibilityinspector.accessibility
 
 import android.graphics.Rect
+import android.text.InputType
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
@@ -20,9 +21,10 @@ data class NodeStats(
     var focusable: Int = 0,
     var checkable: Int = 0,
     var resourceIds: Int = 0,
-    var imageLike: Int = 0
+    var imageLike: Int = 0,
+    var passwordFields: Int = 0
 ) {
-    fun toJson(): JSONObject = JSONObject().apply {
+    fun toJson() = JSONObject().apply {
         put("total", total)
         put("withText", withText)
         put("withDescription", withDescription)
@@ -35,12 +37,16 @@ data class NodeStats(
         put("checkable", checkable)
         put("resourceIds", resourceIds)
         put("imageLike", imageLike)
+        put("passwordFields", passwordFields)
     }
 }
 
 data class NodeRecord(
     val index: Int,
     val depth: Int,
+    val path: String,
+    val parentPath: String?,
+    val indexInParent: Int,
     val className: String,
     val text: String,
     val contentDescription: String,
@@ -61,9 +67,12 @@ data class NodeRecord(
     val childCount: Int,
     val actions: List<String>
 ) {
-    fun toJson(): JSONObject = JSONObject().apply {
+    fun toJson() = JSONObject().apply {
         put("index", index)
         put("depth", depth)
+        put("path", path)
+        put("parentPath", parentPath ?: JSONObject.NULL)
+        put("indexInParent", indexInParent)
         put("className", className)
         put("text", text)
         put("contentDescription", contentDescription)
@@ -95,15 +104,13 @@ data class InspectionSnapshot(
     val truncated: Boolean
 ) {
     fun toJsonString(): String = JSONObject().apply {
-        put("schemaVersion", 1)
+        put("schemaVersion", 2)
         put("capturedAtMillis", capturedAtMillis)
         put("packageName", packageName)
         put("rootClassName", rootClassName)
         put("truncated", truncated)
         put("stats", stats.toJson())
-        put("nodes", JSONArray().apply {
-            nodes.forEach { put(it.toJson()) }
-        })
+        put("nodes", JSONArray().apply { nodes.forEach { put(it.toJson()) } })
     }.toString(2)
 }
 
@@ -111,8 +118,17 @@ object NodeInspector {
     fun inspect(root: AccessibilityNodeInfo, fallbackPackageName: String): InspectionSnapshot {
         val stats = NodeStats()
         val records = ArrayList<NodeRecord>()
-        walk(root, 0, fallbackPackageName, records, stats)
-
+        walk(
+            node = root,
+            depth = 0,
+            path = "0",
+            parentPath = null,
+            indexInParent = 0,
+            inheritedSensitive = false,
+            fallbackPackageName = fallbackPackageName,
+            records = records,
+            stats = stats
+        )
         return InspectionSnapshot(
             capturedAtMillis = System.currentTimeMillis(),
             packageName = safeString { root.packageName?.toString() }.ifBlank { fallbackPackageName },
@@ -126,6 +142,10 @@ object NodeInspector {
     private fun walk(
         node: AccessibilityNodeInfo,
         depth: Int,
+        path: String,
+        parentPath: String?,
+        indexInParent: Int,
+        inheritedSensitive: Boolean,
         fallbackPackageName: String,
         records: MutableList<NodeRecord>,
         stats: NodeStats
@@ -133,29 +153,35 @@ object NodeInspector {
         if (depth > MAX_DEPTH || records.size >= MAX_NODES) return
 
         val className = safeString { node.className?.toString() }
-        val text = safeString { node.text?.toString() }
-        val description = safeString { node.contentDescription?.toString() }
+        val isPassword = safeBoolean { node.isPassword } || isPasswordInput(node)
+        // 密码标记向下继承，避免自定义密码控件把真实值放在子节点中。
+        val sensitive = inheritedSensitive || isPassword
+        val text = if (sensitive) "" else safeString { node.text?.toString() }
+        val description = if (sensitive) "" else safeString { node.contentDescription?.toString() }
         val viewId = safeString { node.viewIdResourceName }
         val packageName = safeString { node.packageName?.toString() }.ifBlank { fallbackPackageName }
-        val bounds = Rect().also { rect ->
-            runCatching { node.getBoundsInScreen(rect) }
-        }.toShortString()
+        val rect = Rect()
+        runCatching { node.getBoundsInScreen(rect) }
         val actions = runCatching {
             node.actionList.map { action ->
                 val label = action.label?.toString()?.takeIf { it.isNotBlank() }
                 if (label == null) "id:${action.id}" else "id:${action.id} $label"
             }
         }.getOrDefault(emptyList())
+        val childCount = safeInt { node.childCount }
 
         val record = NodeRecord(
             index = records.size,
             depth = depth,
+            path = path,
+            parentPath = parentPath,
+            indexInParent = indexInParent,
             className = className,
             text = text,
             contentDescription = description,
             viewId = viewId,
             packageName = packageName,
-            bounds = bounds,
+            bounds = rect.toShortString(),
             clickable = safeBoolean { node.isClickable },
             longClickable = safeBoolean { node.isLongClickable },
             editable = safeBoolean { node.isEditable },
@@ -166,8 +192,8 @@ object NodeInspector {
             checkable = safeBoolean { node.isCheckable },
             checked = safeBoolean { node.isChecked },
             selected = safeBoolean { node.isSelected },
-            password = safeBoolean { node.isPassword },
-            childCount = safeInt { node.childCount },
+            password = isPassword || inheritedSensitive,
+            childCount = childCount,
             actions = actions
         )
         records.add(record)
@@ -175,30 +201,50 @@ object NodeInspector {
         stats.total++
         if (text.isNotBlank()) stats.withText++
         if (description.isNotBlank()) stats.withDescription++
-        if (className.contains("Button", ignoreCase = true)) stats.buttonLike++
-        if (className.contains("EditText", ignoreCase = true) || record.editable) stats.editTexts++
+        if (className.contains("Button", true)) stats.buttonLike++
+        if (className.contains("EditText", true) || record.editable) stats.editTexts++
         if (record.clickable) stats.clickable++
         if (record.longClickable) stats.longClickable++
         if (record.scrollable) stats.scrollable++
         if (record.focusable) stats.focusable++
         if (record.checkable) stats.checkable++
         if (viewId.isNotBlank()) stats.resourceIds++
-        if (className.contains("Image", ignoreCase = true)) stats.imageLike++
+        if (className.contains("Image", true)) stats.imageLike++
+        if (isPassword) stats.passwordFields++
 
-        val childCount = record.childCount
-        for (index in 0 until childCount) {
+        for (childIndex in 0 until childCount) {
             if (records.size >= MAX_NODES) break
-            val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
-            walk(child, depth + 1, fallbackPackageName, records, stats)
+            val child = runCatching { node.getChild(childIndex) }.getOrNull() ?: continue
+            walk(
+                node = child,
+                depth = depth + 1,
+                path = "$path/$childIndex",
+                parentPath = path,
+                indexInParent = childIndex,
+                inheritedSensitive = sensitive,
+                fallbackPackageName = fallbackPackageName,
+                records = records,
+                stats = stats
+            )
         }
+    }
+
+    private fun isPasswordInput(node: AccessibilityNodeInfo): Boolean {
+        val inputType = safeInt { node.inputType }
+        val inputClass = inputType and InputType.TYPE_MASK_CLASS
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        return (inputClass == InputType.TYPE_CLASS_TEXT && variation in setOf(
+            InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+        )) || (inputClass == InputType.TYPE_CLASS_NUMBER &&
+            variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
     }
 
     private inline fun safeString(block: () -> String?): String =
         runCatching { block().orEmpty() }.getOrDefault("")
-
     private inline fun safeBoolean(block: () -> Boolean): Boolean =
         runCatching(block).getOrDefault(false)
-
     private inline fun safeInt(block: () -> Int): Int =
         runCatching(block).getOrDefault(0)
 }

@@ -2,12 +2,14 @@ package com.ttiaogou.accessibilityinspector.visual
 
 import android.app.Activity
 import android.content.Context
-import android.content.Intent
 import android.graphics.Rect
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -16,253 +18,337 @@ import com.ttiaogou.accessibilityinspector.data.InspectorStore
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * 可视化节点树：从 InspectorStore 读取最近一次 JSON 快照。
- * 当前版本使用原生 View，避免引入 Compose 依赖。
- */
 class VisualTreeActivity : Activity() {
-    private lateinit var treeContainer: LinearLayout
-    private lateinit var detail: TextView
-    private val collapsed = mutableSetOf<Int>()
-    private val nodes = mutableListOf<UiNode>()
-    private var selected: UiNode? = null
-
-    data class UiNode(
+    private data class UiNode(
         val index: Int,
         val depth: Int,
-        val parentIndex: Int?,
-        val indexInParent: Int,
         val path: String,
+        val parentPath: String?,
+        val packageName: String,
         val json: JSONObject,
-        val children: MutableList<Int> = mutableListOf()
+        val children: MutableList<UiNode> = mutableListOf()
     )
+
+    private lateinit var treeContainer: LinearLayout
+    private lateinit var detailsView: TextView
+    private lateinit var searchInput: EditText
+    private lateinit var headerView: TextView
+    private val nodes = mutableListOf<UiNode>()
+    private val roots = mutableListOf<UiNode>()
+    private val collapsedPaths = mutableSetOf<String>()
+    private var selectedNode: UiNode? = null
+    private var targetPackageName: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        buildUi()
+        buildScreen()
         loadSnapshot()
     }
 
-    private fun buildUi() {
+    private fun buildScreen() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        header.addView(Button(this).apply {
-            text = "刷新"
-            setOnClickListener { loadSnapshot() }
-        })
-        header.addView(Button(this).apply {
-            text = "全部展开"
-            setOnClickListener { collapsed.clear(); renderTree() }
-        })
-        header.addView(Button(this).apply {
-            text = "全部折叠"
-            setOnClickListener {
-                nodes.filter { it.children.isNotEmpty() }.forEach { collapsed.add(it.index) }
-                renderTree()
-            }
-        })
-        root.addView(header)
-
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-            )
-        }
-        val treeScroll = ScrollView(this)
-        treeContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        treeScroll.addView(treeContainer)
-        body.addView(treeScroll, LinearLayout.LayoutParams(0, -1, 1.15f))
-
-        val detailScroll = ScrollView(this)
-        detail = TextView(this).apply {
-            textSize = 13f
-            setTextIsSelectable(true)
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            text = "选择一个节点查看属性"
         }
-        detailScroll.addView(detail)
-        body.addView(detailScroll, LinearLayout.LayoutParams(0, -1, 0.85f))
-        root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
+        headerView = TextView(this).apply {
+            textSize = 16f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(0xFF202124.toInt())
+        }
+        root.addView(headerView)
 
-        root.addView(Button(this).apply {
-            text = "在目标应用中高亮选中节点"
-            setOnClickListener { requestHighlight() }
+        searchInput = EditText(this).apply {
+            singleLine = true
+            hint = "搜索节点文字、类型或资源 ID"
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    renderTree()
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+        }
+        root.addView(searchInput)
+
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        controls.addView(smallButton("刷新") { loadSnapshot() })
+        controls.addView(smallButton("全部展开") {
+            collapsedPaths.clear()
+            renderTree()
         })
+        controls.addView(smallButton("全部折叠") {
+            nodes.filter { it.children.isNotEmpty() }.forEach { collapsedPaths.add(it.path) }
+            renderTree()
+        })
+        root.addView(controls)
+
+        val treeScroll = ScrollView(this)
+        treeContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        treeScroll.addView(treeContainer)
+        root.addView(treeScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val divider = View(this).apply { setBackgroundColor(0xFFCFD8DC.toInt()) }
+        root.addView(divider, LinearLayout.LayoutParams(-1, dp(1)))
+
+        detailsView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFF202124.toInt())
+            setTextIsSelectable(true)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            text = "选择节点查看详细属性。"
+        }
+        val detailsScroll = ScrollView(this)
+        detailsScroll.addView(detailsView)
+        root.addView(detailsScroll, LinearLayout.LayoutParams(-1, dp(220)))
+
+        root.addView(actionButton("保存高亮请求并切回目标应用") { requestHighlight() })
+        root.addView(actionButton("返回") { finish() })
         setContentView(root)
     }
 
     private fun loadSnapshot() {
         val raw = InspectorStore.getLastReport(this)
         if (raw.isNullOrBlank()) {
-            Toast.makeText(this, "没有检测报告，请先返回主界面开始监测。", Toast.LENGTH_LONG).show()
+            headerView.text = "没有检测报告。请先返回主界面，开始监测目标应用。"
+            nodes.clear()
+            roots.clear()
+            renderTree()
+            detailsView.text = "暂无节点数据。"
             return
         }
+
         try {
-            val root = JSONObject(raw)
-            val array = root.optJSONArray("nodes") ?: JSONArray()
+            val report = JSONObject(raw)
+            targetPackageName = report.optString("packageName")
+            val array = report.optJSONArray("nodes") ?: JSONArray()
             nodes.clear()
-            val parentStack = mutableListOf<Int>()
-            val siblingCounts = mutableMapOf<Int, Int>()
+            roots.clear()
+            val byPath = linkedMapOf<String, UiNode>()
+            val fallbackStack = mutableListOf<String>()
+            val siblingCount = mutableMapOf<String, Int>()
+
             for (i in 0 until array.length()) {
-                val obj = array.optJSONObject(i) ?: continue
-                val depth = obj.optInt("depth").coerceAtLeast(0)
-                while (parentStack.size > depth) parentStack.removeAt(parentStack.lastIndex)
-                val parent = if (depth == 0) null else parentStack.getOrNull(depth - 1)
-                val siblingIndex = if (parent == null) {
-                    siblingCounts.getOrDefault(-1, 0).also { siblingCounts[-1] = it + 1 }
-                } else {
-                    siblingCounts.getOrDefault(parent, 0).also { siblingCounts[parent] = it + 1 }
-                }
-                val parentPath = parent?.let { nodes[it].path }
-                val path = if (parentPath == null) siblingIndex.toString() else "$parentPath/$siblingIndex"
+                val json = array.optJSONObject(i) ?: continue
+                val depth = json.optInt("depth", 0).coerceAtLeast(0)
+                while (fallbackStack.size > depth) fallbackStack.removeAt(fallbackStack.lastIndex)
+                val parentFromJson = if (json.has("parentPath") && !json.isNull("parentPath")) {
+                    json.optString("parentPath").takeIf { it.isNotBlank() }
+                } else null
+                val parentPath = parentFromJson ?: if (depth > 0) fallbackStack.getOrNull(depth - 1) else null
+                val siblingKey = parentPath ?: "<root>"
+                val inferredIndex = siblingCount.getOrDefault(siblingKey, 0)
+                siblingCount[siblingKey] = inferredIndex + 1
+                val indexInParent = json.optInt("indexInParent", inferredIndex)
+                val path = json.optString("path").takeIf { it.isNotBlank() }
+                    ?: if (parentPath == null) indexInParent.toString() else "$parentPath/$indexInParent"
+
                 val node = UiNode(
-                    index = nodes.size,
+                    index = json.optInt("index", i),
                     depth = depth,
-                    parentIndex = parent,
-                    indexInParent = siblingIndex,
                     path = path,
-                    json = obj
+                    parentPath = parentPath,
+                    packageName = json.optString("packageName", targetPackageName),
+                    json = json
                 )
                 nodes.add(node)
-                if (parent != null) nodes[parent].children.add(node.index)
-                if (parentStack.size == depth) parentStack.add(node.index)
-                else if (depth == 0) {
-                    parentStack.clear()
-                    parentStack.add(node.index)
+                byPath[path] = node
+                if (fallbackStack.size == depth) fallbackStack.add(path)
+                else if (fallbackStack.size > depth) {
+                    fallbackStack[depth] = path
+                    while (fallbackStack.size > depth + 1) fallbackStack.removeAt(fallbackStack.lastIndex)
                 } else {
-                    parentStack.add(node.index)
+                    while (fallbackStack.size < depth) fallbackStack.add("")
+                    fallbackStack.add(path)
                 }
             }
-            collapsed.clear()
-            selected = null
-            detail.text = "共 ${nodes.size} 个节点\n应用：${root.optString("packageName")}\n采集时间：${root.optLong("capturedAtMillis")}"
+
+            nodes.forEach { node ->
+                val parent = node.parentPath?.let { byPath[it] }
+                if (parent != null) parent.children.add(node) else roots.add(node)
+            }
+
+            collapsedPaths.clear()
+            // 初始展开根节点，较深层级默认折叠，避免一次渲染数千行。
+            nodes.filter { it.depth >= 1 && it.children.isNotEmpty() }
+                .forEach { collapsedPaths.add(it.path) }
+            selectedNode = null
+            detailsView.text = "选择节点查看详细属性。\n应用：$targetPackageName\n节点数：${nodes.size}"
+            headerView.text = "应用：$targetPackageName    节点：${nodes.size}    schema：${report.optInt("schemaVersion", 1)}"
             renderTree()
-        } catch (e: Exception) {
-            Toast.makeText(this, "解析节点 JSON 失败：${e.message}", Toast.LENGTH_LONG).show()
+        } catch (error: Exception) {
+            headerView.text = "节点报告解析失败：${error.message}"
+            Toast.makeText(this, "报告解析失败：${error.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun renderTree() {
+        if (!::treeContainer.isInitialized) return
         treeContainer.removeAllViews()
-        val hidden = mutableSetOf<Int>()
-        nodes.forEach { node ->
-            if (node.parentIndex != null && node.parentIndex in hidden) {
-                hidden.add(node.index)
-                return@forEach
+        val query = searchInput.text?.toString()?.trim()?.lowercase().orEmpty()
+        if (roots.isEmpty()) {
+            treeContainer.addView(textView("暂无节点。", 13f))
+            return
+        }
+        roots.forEach { renderNode(it, query) }
+    }
+
+    private fun nodeMatches(node: UiNode, query: String): Boolean {
+        if (query.isBlank()) return true
+        val j = node.json
+        val own = listOf(
+            j.optString("className"),
+            j.optString("text"),
+            j.optString("contentDescription"),
+            j.optString("viewIdResourceName"),
+            node.path
+        ).joinToString(" ").lowercase()
+        return own.contains(query) || node.children.any { nodeMatches(it, query) }
+    }
+
+    private fun renderNode(node: UiNode, query: String) {
+        if (!nodeMatches(node, query)) return
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4 + node.depth * 13), dp(2), dp(4), dp(2))
+            setBackgroundColor(
+                if (selectedNode?.path == node.path) 0xFFDCEBFF.toInt() else 0x00000000
+            )
+        }
+        val toggle = TextView(this).apply {
+            text = when {
+                node.children.isEmpty() -> "  "
+                node.path in collapsedPaths && query.isBlank() -> "＋"
+                else -> "－"
             }
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(3), dp(4), dp(3))
-                setBackgroundColor(
-                    if (selected?.index == node.index) 0xFFDCEBFF.toInt()
-                    else 0x00000000
-                )
-            }
-            val toggle = TextView(this).apply {
-                text = when {
-                    node.children.isEmpty() -> "  "
-                    node.index in collapsed -> "＋ "
-                    else -> "－ "
-                }
-                setPadding(dp(4), dp(4), dp(4), dp(4))
-                setOnClickListener {
-                    if (node.children.isNotEmpty()) {
-                        if (!collapsed.add(node.index)) collapsed.remove(node.index)
-                        renderTree()
-                    }
-                }
-            }
-            row.addView(toggle)
-            val label = TextView(this).apply {
-                val cls = node.json.optString("className").substringAfterLast('.')
-                val textValue = node.json.optString("text").take(42)
-                text = buildString {
-                    append(cls.ifBlank { "Unknown" })
-                    if (textValue.isNotBlank()) append("  ·  ").append(textValue)
-                    append("  #").append(node.index)
-                }
-                textSize = 12f
-                setPadding(dp(4), dp(7), dp(4), dp(7))
-                setOnClickListener {
-                    selected = node
-                    showDetails(node)
+            textSize = 14f
+            setPadding(dp(5), dp(7), dp(5), dp(7))
+            setOnClickListener {
+                if (node.children.isNotEmpty()) {
+                    if (!collapsedPaths.add(node.path)) collapsedPaths.remove(node.path)
                     renderTree()
                 }
             }
-            row.addView(label, LinearLayout.LayoutParams(0, -2, 1f))
-            row.setPadding(dp(8 + node.depth * 15), dp(2), dp(4), dp(2))
-            treeContainer.addView(row)
-            if (node.index in collapsed) node.children.forEach { hidden.add(it) }
         }
+        row.addView(toggle)
+        val label = TextView(this).apply {
+            val cls = node.json.optString("className").substringAfterLast('.')
+            val value = node.json.optString("text").replace('\n', ' ').take(46)
+            text = buildString {
+                append(cls.ifBlank { "Unknown" })
+                if (value.isNotBlank()) append("  ·  ").append(value)
+                append("  [").append(node.index).append(']')
+            }
+            textSize = 12f
+            setTextColor(0xFF202124.toInt())
+            setPadding(dp(4), dp(7), dp(4), dp(7))
+            setOnClickListener {
+                selectedNode = node
+                showDetails(node)
+                renderTree()
+            }
+        }
+        row.addView(label, LinearLayout.LayoutParams(0, -2, 1f))
+        row.setOnClickListener {
+            selectedNode = node
+            showDetails(node)
+            renderTree()
+        }
+        treeContainer.addView(row)
+
+        val shouldExpand = query.isNotBlank() || node.path !in collapsedPaths
+        if (shouldExpand) node.children.forEach { renderNode(it, query) }
     }
 
     private fun showDetails(node: UiNode) {
         val j = node.json
-        detail.text = """
-            节点 #${node.index}
-            类型：${j.optString("className")}
-            文字：${j.optString("text")}
-            描述：${j.optString("contentDescription")}
-            资源 ID：${j.optString("viewIdResourceName")}
-            路径：${node.path}
-            父节点：${node.parentIndex?.let { nodes[it].path } ?: "无（根节点）"}
-            层级：${node.depth}
-            子节点数：${j.optInt("childCount")}
-            屏幕坐标：${j.optString("boundsInScreen")}
-            clickable：${j.optBoolean("clickable")}
-            longClickable：${j.optBoolean("longClickable")}
-            editable：${j.optBoolean("editable")}
-            scrollable：${j.optBoolean("scrollable")}
-            focusable：${j.optBoolean("focusable")}
-            focused：${j.optBoolean("focused")}
-            enabled：${j.optBoolean("enabled")}
-            password：${j.optBoolean("password")}
-            actions：${j.optJSONArray("actions")?.toString() ?: "[]"}
-        """.trimIndent()
+        detailsView.text = buildString {
+            append("节点 #${node.index}\n")
+            append("类型：${j.optString("className")}\n")
+            append("文字：${if (j.optBoolean("password")) "[已过滤：密码字段]" else j.optString("text")}\n")
+            append("描述：${if (j.optBoolean("password")) "[已过滤：密码字段]" else j.optString("contentDescription")}\n")
+            append("资源 ID：${j.optString("viewIdResourceName")}\n")
+            append("路径：${node.path}\n")
+            append("父节点：${node.parentPath ?: "无（根节点）"}\n")
+            append("层级：${node.depth}\n")
+            append("同级索引：${j.optInt("indexInParent")}\n")
+            append("子节点数：${j.optInt("childCount")}\n")
+            append("屏幕坐标：${j.optString("boundsInScreen")}\n")
+            append("可点击：${j.optBoolean("clickable")}\n")
+            append("可长按：${j.optBoolean("longClickable")}\n")
+            append("可编辑：${j.optBoolean("editable")}\n")
+            append("可滚动：${j.optBoolean("scrollable")}\n")
+            append("可聚焦：${j.optBoolean("focusable")}\n")
+            append("已启用：${j.optBoolean("enabled")}\n")
+            append("密码字段：${j.optBoolean("password")}\n")
+            append("操作：${j.optJSONArray("actions")?.toString() ?: "[]"}")
+        }
     }
 
     private fun requestHighlight() {
-        val node = selected
+        val node = selectedNode
         if (node == null) {
             Toast.makeText(this, "请先选择一个节点。", Toast.LENGTH_SHORT).show()
             return
         }
-        val j = node.json
-        val bounds = parseBounds(j.optString("boundsInScreen"))
+        if (targetPackageName.isBlank()) {
+            Toast.makeText(this, "报告中没有目标应用包名。", Toast.LENGTH_LONG).show()
+            return
+        }
+        val bounds = parseBounds(node.json.optString("boundsInScreen"))
         if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
             Toast.makeText(this, "该节点没有有效屏幕坐标。", Toast.LENGTH_LONG).show()
             return
         }
-        val packageName = j.optString("packageName")
+
         getSharedPreferences("node_highlight", Context.MODE_PRIVATE).edit()
-            .putString("package", packageName)
+            .putString("package", targetPackageName)
             .putInt("left", bounds.left)
             .putInt("top", bounds.top)
             .putInt("right", bounds.right)
             .putInt("bottom", bounds.bottom)
+            .putLong("requested_at", System.currentTimeMillis())
             .putBoolean("pending", true)
             .apply()
 
-        val launch = packageManager.getLaunchIntentForPackage(packageName)
-        if (launch == null) {
-            Toast.makeText(this, "无法重新打开目标应用：$packageName", Toast.LENGTH_LONG).show()
-            return
-        }
-        Toast.makeText(this, "正在返回目标应用；服务将在目标窗口出现时显示高亮框。", Toast.LENGTH_LONG).show()
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        startActivity(launch)
+        Toast.makeText(
+            this,
+            "高亮请求已保存。请切换回 $targetPackageName，红框将在对应页面出现约 2.2 秒。",
+            Toast.LENGTH_LONG
+        ).show()
+        finish()
     }
 
     private fun parseBounds(value: String): Rect? {
-        val nums = Regex("-?\\d+").findAll(value).mapNotNull { it.value.toIntOrNull() }.toList()
-        if (nums.size < 4) return null
-        return Rect(nums[0], nums[1], nums[2], nums[3])
+        val numbers = Regex("-?\\d+").findAll(value)
+            .mapNotNull { it.value.toIntOrNull() }
+            .toList()
+        if (numbers.size < 4) return null
+        return Rect(numbers[0], numbers[1], numbers[2], numbers[3])
     }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density + 0.5f).toInt()
+    private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {
+        text = label
+        textSize = 11f
+        isAllCaps = false
+        setPadding(dp(2), 0, dp(2), 0)
+        setOnClickListener { action() }
+    }
+
+    private fun actionButton(label: String, action: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        setOnClickListener { action() }
+    }
+
+    private fun textView(value: String, size: Float) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(0xFF202124.toInt())
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 }

@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AccessibilityNodeInspector"
+rootProject.name = "AcbVisualInspectorV2"
 include(":app")

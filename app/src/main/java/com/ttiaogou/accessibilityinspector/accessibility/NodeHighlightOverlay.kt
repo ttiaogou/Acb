@@ -11,22 +11,20 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 
-/**
- * 由无障碍服务创建的短暂屏幕边框。
- * 使用 TYPE_ACCESSIBILITY_OVERLAY，不需要普通悬浮窗权限。
- */
+/** Short-lived red outline drawn by the enabled accessibility service. */
 class NodeHighlightOverlay(private val service: AccessibilityService) {
-    private val wm = service.getSystemService(WindowManager::class.java)
+    private val windowManager = service.getSystemService(WindowManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
-    private var view: HighlightView? = null
+    private var overlay: HighlightView? = null
+    private var hideRunnable: Runnable? = null
 
     fun show(left: Int, top: Int, right: Int, bottom: Int) {
         handler.post {
-            hideNow()
+            removeOverlay()
             val width = (right - left).coerceAtLeast(2)
             val height = (bottom - top).coerceAtLeast(2)
-            val v = HighlightView()
-            view = v
+            val view = HighlightView()
+            overlay = view
             val params = WindowManager.LayoutParams(
                 width,
                 height,
@@ -40,24 +38,31 @@ class NodeHighlightOverlay(private val service: AccessibilityService) {
                 x = left
                 y = top
             }
-            runCatching { wm.addView(v, params) }
-            handler.postDelayed({ hideNow() }, 2200L)
+            runCatching { windowManager.addView(view, params) }
+                .onFailure { overlay = null }
+            val task = Runnable { removeOverlay() }
+            hideRunnable = task
+            handler.postDelayed(task, 2200L)
         }
     }
 
-    fun hide() = handler.post { hideNow() }
+    fun hide() = handler.post { removeOverlay() }
 
-    private fun hideNow() {
-        val old = view ?: return
-        view = null
-        runCatching { wm.removeView(old) }
+    private fun removeOverlay() {
+        val pendingHide = hideRunnable
+        if (pendingHide != null) handler.removeCallbacks(pendingHide)
+        hideRunnable = null
+        val old = overlay ?: return
+        overlay = null
+        runCatching { windowManager.removeView(old) }
     }
 
     private inner class HighlightView : View(service) {
+        private val density = resources.displayMetrics.density
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.RED
             style = Paint.Style.STROKE
-            strokeWidth = 6f * resources.displayMetrics.density
+            strokeWidth = 4f * density
         }
 
         override fun onDraw(canvas: Canvas) {
